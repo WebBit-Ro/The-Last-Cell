@@ -5,6 +5,14 @@
  Адаптивная веб-игра в жанре логического детектива на чистом HTML, CSS и JavaScript.
 
 ---
+ 
+## 🌐 Live Demo / Перегляд сайту / Просмотр сайта
+
+* 🇬🇧 **English:** You can check the live site [here](https://webbit-ro.github.io/The-Last-Cell/)
+* 🇺🇦 **Українська:** Подивитися роботу сайту можна [тут](https://webbit-ro.github.io/The-Last-Cell/)
+* 🇷🇺 **Русский:** Посмотреть работу сайта вы можете [тут](https://webbit-ro.github.io/The-Last-Cell/)
+
+---
 
 ###  Language / Мова / Язык
 * [English](#-english)
