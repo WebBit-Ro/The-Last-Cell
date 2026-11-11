@@ -3,6 +3,10 @@
     const I18N = window.LAST_CELL_LOCALES || {};
     const LOCALE = I18N;
     const LEVELS = window.LAST_CELL_LEVELS || [];
+    const CAMPAIGN_LEVELS = LEVELS.filter(level => !level.isDaily).sort((a, b) => a.order - b.order);
+    const CAMPAIGN_COUNT = CAMPAIGN_LEVELS.length;
+    const LEVEL_BY_ID = new Map(LEVELS.map(level => [level.id, level]));
+    const CAMPAIGN_BY_ORDER = new Map(CAMPAIGN_LEVELS.map(level => [Number(level.order), level]));
     const LANGUAGES = Object.keys(I18N);
     const CHARS = Object.keys(I18N.ru?._data?.characters || {}).map(id => ({
         id,
@@ -94,8 +98,9 @@
     function neighboursOf(r, c) {
         return [[1, 0], [-1, 0], [0, 1], [0, -1]].map(([dr, dc]) => cellAt(r + dr, c + dc)).filter(Boolean);
     }
+    const compiledLevels = new WeakSet();
     function compileLevel(level) {
-        if (!level || !Array.isArray(level.cells) || !Array.isArray(level.clues))
+        if (!level || !Array.isArray(level.cells) || !Array.isArray(level.clues) || compiledLevels.has(level))
             return level;
         const cellMap = new Map(level.cells.map(c => [`${c.r},${c.c}`, c]));
         const objectMap = new Map(level.cells.filter(c => c.objectId).map(c => [c.objectId, c]));
@@ -117,14 +122,15 @@
             }
             return { ...cl };
         });
+        compiledLevels.add(level);
         return level;
     }
-    LEVELS.forEach(compileLevel);
     const cellAt = (r, c) => state.cellMap.get(`${r},${c}`);
     const key = (r, c) => `${r},${c}`;
     function prepareLevel(level) {
         if (!level)
             return false;
+        compileLevel(level);
         level = { ...level, geometry: { shape: "square", aspect: 1 } };
         state.level = level;
         state.cells = level.cells.map(x => ({ ...x }));
@@ -165,7 +171,8 @@
             }
             state.seconds--;
             updateTimer();
-            if (state.seconds % 2 === 0)
+            // Timer-only persistence is deliberately throttled; player actions still save immediately.
+            if (state.seconds % 10 === 0)
                 saveProgress();
         }, 1000);
     }
@@ -215,7 +222,7 @@
                 const current = ensureDailyLevel();
                 return !!current && s.levelId === current.id;
             }
-            return LEVELS.some(l => l.id === s.levelId);
+            return LEVEL_BY_ID.has(s.levelId);
         }
         catch {
             return false;
@@ -244,7 +251,7 @@
                 if (!daily || s.levelId !== daily.id)
                     return false;
             }
-            const level = LEVELS.find(l => l.id === s.levelId);
+            const level = LEVEL_BY_ID.get(s.levelId);
             if (!level || s.completedAt)
                 return false;
             const elapsed = Math.max(0, Math.floor((Date.now() - (s.lastSavedAt || Date.now())) / 1000));
@@ -658,7 +665,7 @@
         setTheme("base");
         const resume = hasResume();
         const saved = resume ? JSON.parse(localStorage.getItem(SAVE_KEY)) : null;
-        const level = saved ? (saved.levelId.startsWith('daily-') ? ensureDailyLevel() : LEVELS.find(l => l.id === saved.levelId)) : null;
+        const level = saved ? (saved.levelId.startsWith('daily-') ? ensureDailyLevel() : LEVEL_BY_ID.get(saved.levelId)) : null;
         const homeCard = (ico, title, sub, key, extra = "") => `<button class="hero-btn ${extra}" data-home="${key}" ${key === "resume" && !resume ? "disabled" : ""}><span class="hero-btn-top"><span class="hero-icon">${ico}</span><strong>${esc(title)}</strong></span><small>${esc(sub)}</small></button>`;
         document.querySelector(".page").innerHTML = `<section class="hero redesign-home">
    <div class="hero-copy">
@@ -700,17 +707,15 @@
             renderHome();
     }
     function campaignCount() {
-        let n = 0;
-        for (const l of LEVELS)
-            if (!l.isDaily)
-                n++;
-        return n;
+        return CAMPAIGN_COUNT;
     }
     function ensureDailyLevel() {
         const date = new Date();
         const dateKey = dailyDateKey(date);
         const id = dailyIdForDate(date);
-        let level = LEVELS.find(l => l.id === id && l.isDaily);
+        let level = LEVEL_BY_ID.get(id);
+        if (level && !level.isDaily)
+            level = null;
         if (level)
             return level;
         try {
@@ -730,9 +735,12 @@
         }
         level.isDaily = true;
         const oldDaily = LEVELS.findIndex(l => l.isDaily);
-        if (oldDaily >= 0)
+        if (oldDaily >= 0) {
+            LEVEL_BY_ID.delete(LEVELS[oldDaily].id);
             LEVELS.splice(oldDaily, 1);
+        }
         LEVELS.push(level);
+        LEVEL_BY_ID.set(level.id, level);
         compileLevel(level);
         try {
             localStorage.setItem(DAILY_CACHE_KEY, JSON.stringify(level));
@@ -758,10 +766,9 @@
         shell("levels");
         setTheme("base");
         const done = getDone();
-        const campaign = LEVELS.filter(l => !l.isDaily).sort((a, b) => a.order - b.order);
         const chapters = {};
-        campaign.forEach(l => (chapters[l.chapter] ??= []).push(l));
-        const previousId = order => campaign.find(l => l.order === order - 1)?.id;
+        CAMPAIGN_LEVELS.forEach(l => (chapters[l.chapter] ??= []).push(l));
+        const previousId = order => CAMPAIGN_BY_ORDER.get(Number(order) - 1)?.id;
         document.querySelector(".page").innerHTML = Object.entries(chapters).map(([ch, arr]) => { const l = arr[0]; return `<section class="chapter ${esc(l.theme ? `theme-${l.theme}` : "")}"><div class="chapter-head"><span>${esc(t("chapter"))} ${ch}</span><div><h2>${esc(txt(l.location))}</h2><small class="theme-chip">${esc(t("theme"))}: ${esc(l.theme || "classic")}</small></div></div><div class="levels">${arr.map(x => { const previous = previousId(x.order), unlocked = x.order === 1 || (!!previous && done.includes(previous)), completed = done.includes(x.id); return `<article class="level-card ${completed ? "done" : ""} ${unlocked ? "" : "locked"}"><div class="level-num">${esc(t("case"))} ${String(x.order).padStart(3, "0")}</div><h3>${esc(txt(x.title))}</h3><div class="stars">${"★".repeat(Math.min(8, x.difficulty)) + "☆".repeat(8 - Math.min(8, x.difficulty))}</div><div class="goal-chip">${esc(GOALS[x.goalType]?.[lang] || x.goalType)}</div><p>${esc(txt(x.intro))}</p><button class="${unlocked ? "primary" : "secondary"} openLevel" data-id="${x.id}" ${unlocked ? "" : "disabled"}>${unlocked ? (completed ? esc(t("completed")) : esc(t("open"))) : `🔒 ${esc(t("locked"))}`}</button></article>`; }).join("")}</div></section>`; }).join("");
         const page = document.querySelector(".page");
         page.onclick = e => {
@@ -772,7 +779,7 @@
     }
     function setLevel(id, restore = true) {
         stopTimer();
-        const target = LEVELS.find(l => l.id === id) || LEVELS[0];
+        const target = LEVEL_BY_ID.get(id) || LEVELS[0];
         if (!target)
             return;
         prepareLevel(target);
@@ -800,7 +807,8 @@
         shell("play");
         setTheme(state.level.theme || "base");
         const l = state.level;
-        document.querySelector(".page").innerHTML = `<section class="layout"><aside class="side"><div class="panel"><div class="panel-title">${esc(t("case"))} ${String(l.order).padStart(3, "0")}</div><div class="case-title">${esc(txt(l.title))}</div><div class="muted">${esc(txt(l.location))}</div><div class="stats"><span class="stat">${l.rows}×${l.cols}</span><span class="stat">${l.activeCharacters.length} ${esc(t("suspects").toLowerCase())}</span><span class="stat theme-stat">${esc(l.theme || "classic")}</span></div><div class="goal"><b>${esc(t("goal"))}:</b><br>${esc(txt(l.goalText))}</div><div id="saveState" class="save-state">${esc(t("saved"))}</div></div><div class="panel"><div class="panel-title">${esc(t("suspects"))}</div><div id="characters" class="char-list"></div><div class="victim-card"><div class="victim-token">☠</div><div><b>${esc(t("victim"))}</b><div class="muted victim-desc">${esc(t("lastText"))}</div></div></div></div></aside><section class="center"><div class="game-head"><div><div class="eyebrow">${esc(t("hint"))}</div><h2 class="game-title">${esc(txt(l.title))}</h2></div><div class="timer"><strong id="timerValue"></strong><span>${esc(t("case"))}</span></div></div><div class="board-shell"><div id="board" class="board" role="grid" aria-label="${esc(txt(l.title))}"></div></div><div class="controls"><button id="placeBtn">${esc(t("pieces"))}</button><button id="notesBtn">${esc(t("notes"))}</button><button id="nearBtn">${esc(t("near"))}</button><span class="help">${esc(t("nearText"))}</span></div><div class="actions"><button id="checkBtn" class="primary">${esc(t("check"))}</button><button id="surrenderBtn">${esc(t("surrender"))}</button><button id="solutionBtn" disabled>${esc(t("solution"))}</button></div><div id="result" class="result hidden"></div><div class="panel killer-panel"><div id="accusedTitle" class="panel-title">${esc(t("culprit"))}</div><div id="accused" class="accused-list"></div><button id="accusedCheck" class="secondary accused-check">${esc(t("check"))}</button><div id="accusedResult" class="result hidden"></div></div></section><aside class="right"><div class="panel"><div class="panel-title">${esc(t("map"))}</div><div id="map" class="map"></div></div><div class="panel"><div class="panel-title">${esc(t("clues"))}</div><div id="clues" class="clues"></div><div class="progress"><div id="progressBar"></div></div><div class="muted progress-note">${esc(t("savedExact"))}</div></div></aside></section>`;
+        document.querySelector(".page").innerHTML = `<section class="layout"><aside class="side"><div class="panel"><div class="panel-title">${esc(t("case"))} ${String(l.order).padStart(3, "0")}</div><div class="case-title">${esc(txt(l.title))}</div><div class="muted">${esc(txt(l.location))}</div><div class="stats"><span class="stat">${l.rows}×${l.cols}</span><span class="stat">${l.activeCharacters.length} ${esc(t("suspects").toLowerCase())}</span><span class="stat theme-stat">${esc(l.theme || "classic")}</span></div><div class="goal"><b>${esc(t("goal"))}:</b><br>${esc(txt(l.goalText))}</div><div id="saveState" class="save-state">${esc(t("saved"))}</div></div><div class="panel"><div class="panel-title">${esc(t("suspects"))}</div><div id="characters" class="char-list"></div><div class="victim-card"><div class="victim-token">☠</div><div><b>${esc(t("victim"))}</b><div class="muted victim-desc">${esc(t("lastText"))}</div></div></div></div></aside><section class="center"><div class="game-head"><div><div class="eyebrow">${esc(t("hint"))}</div><h2 class="game-title">${esc(txt(l.title))}</h2></div><div class="timer"><strong id="timerValue"></strong><span>${esc(t("case"))}</span></div></div><div class="board-shell"><div id="roomLegend" class="room-legend" role="list" aria-label="${esc(lang === "ru" ? "Комнаты уровня" : lang === "uk" ? "Кімнати рівня" : "Level rooms")}"></div><div id="board" class="board" role="grid" aria-label="${esc(txt(l.title))}"></div></div><div class="controls"><button id="placeBtn">${esc(t("pieces"))}</button><button id="notesBtn">${esc(t("notes"))}</button><button id="nearBtn">${esc(t("near"))}</button><span class="help">${esc(t("nearText"))}</span></div><div class="actions"><button id="checkBtn" class="primary">${esc(t("check"))}</button><button id="surrenderBtn">${esc(t("surrender"))}</button><button id="solutionBtn" disabled>${esc(t("solution"))}</button></div><div id="result" class="result hidden"></div><div class="panel killer-panel"><div id="accusedTitle" class="panel-title">${esc(t("culprit"))}</div><div id="accused" class="accused-list"></div><button id="accusedCheck" class="secondary accused-check">${esc(t("check"))}</button><div id="accusedResult" class="result hidden"></div></div></section><aside class="right"><div class="panel"><div class="panel-title">${esc(t("map"))}</div><div id="map" class="map"></div></div><div class="panel"><div class="panel-title">${esc(t("clues"))}</div><div id="clues" class="clues"></div><div class="progress"><div id="progressBar"></div></div><div class="muted progress-note">${esc(t("savedExact"))}</div></div></aside></section>`;
+        updateRoomLegend();
         updateAll();
         bindPlay();
         if (state.seconds > 0 && !state.finalized)
@@ -893,6 +901,14 @@
         box.innerHTML = "";
         box.appendChild(fragment);
     }
+    function updateRoomLegend() {
+        const box = $("roomLegend");
+        if (!box)
+            return;
+        const rooms = state.level?.rooms || [];
+        const heading = lang === "ru" ? "КОМНАТЫ" : lang === "uk" ? "КІМНАТИ" : "ROOMS";
+        box.innerHTML = `<span class="room-legend-heading">${esc(heading)}</span>${rooms.map(room => `<span class="room-legend-item ${esc(room.className || "")}" role="listitem"><i aria-hidden="true"></i><span>${esc(roomName(room))}</span></span>`).join("")}`;
+    }
     function updateBoard(showSolutionPreview = false) {
         const b = $("board");
         if (!b)
@@ -935,10 +951,6 @@
                     else if (Math.abs(focus[0] - r) === 1 && Math.abs(focus[1] - c) === 1)
                         el.classList.add("diagonal-cell");
                 }
-                const tag = document.createElement("span");
-                tag.className = "room-label";
-                tag.textContent = roomName(room).slice(0, 3).toUpperCase();
-                el.appendChild(tag);
                 if (cell.object !== "none") {
                     const o = document.createElement("div");
                     o.className = "object-icon";
@@ -1235,7 +1247,7 @@
         });
         modal.querySelector(".next")?.addEventListener("click", () => {
             modal.remove();
-            const next = LEVELS.find(level => !level.isDaily && level.order === state.level.order + 1);
+            const next = CAMPAIGN_BY_ORDER.get(Number(state.level.order) + 1);
             if (next)
                 setLevel(next.id, false);
             else
@@ -1290,7 +1302,7 @@
             else if (l.isDaily)
                 renderDaily();
             else if (l.order < campaignCount()) {
-                const next = LEVELS.find(x => !x.isDaily && x.order === l.order + 1);
+                const next = CAMPAIGN_BY_ORDER.get(Number(l.order) + 1);
                 if (next)
                     setLevel(next.id, false);
                 else
